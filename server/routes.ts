@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, getOidcConfig, updateUserSession } from "./replitAuth";
 import { setupLocalAuth } from "./localAuth";
-import { generateAIResponse } from "./gemini";
+import { generateAIResponse, analyzePdfContent, generateFaqFromConversation } from "./gemini";
 import { z } from "zod";
 import { insertTicketSchema, insertTicketReplySchema, insertUserAiMemorySchema } from "@shared/schema";
 import passport from "passport";
@@ -159,6 +159,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/tickets', isAuthenticatedLocal, async (req: any, res) => {
     try {
       const userId = req.user?.claims?.sub || req.user?.id;
+      
+      // Check if user is blocked
+      const isBlocked = await storage.isUserBlocked(userId);
+      if (isBlocked) {
+        return res.status(403).json({ message: "You are blocked from creating tickets" });
+      }
+
       const validatedData = insertTicketSchema.parse({
         ...req.body,
         userId,
@@ -215,6 +222,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Ticket not found" });
       }
 
+      // Check if ticket is closed, rejected, or resolved
+      if (ticket.status === 'closed' || ticket.status === 'rejected' || ticket.status === 'resolved') {
+        return res.status(403).json({ message: `Cannot reply to ${ticket.status} tickets` });
+      }
+
       const user = await storage.getUser(userId);
       const senderName = user?.firstName && user?.lastName 
         ? `${user.firstName} ${user.lastName}` 
@@ -254,6 +266,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Message is required" });
       }
 
+      // Check if user is blocked
+      const isBlocked = await storage.isUserBlocked(userId);
+      if (isBlocked) {
+        return res.status(403).json({ message: "You are blocked from using AI chat" });
+      }
+
       // Check if AI is enabled
       const settings = await storage.getAiSettings();
       if (!settings?.geminiEnabled) {
@@ -267,11 +285,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         aiResponse: m.aiResponse,
       }));
 
+      // Get FAQ knowledge
+      const faqKnowledge = await storage.getFaqKnowledge();
+      const faqData = faqKnowledge.map(faq => ({
+        question: faq.question,
+        answer: faq.answer,
+      }));
+
       // Generate AI response
       const aiResponse = await generateAIResponse({
         userId,
         message,
         history: conversationHistory,
+        faqKnowledge: faqData,
       });
 
       // Store in memory
@@ -280,6 +306,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         message,
         aiResponse,
       });
+
+      // Try to learn from this conversation
+      try {
+        const faqCandidate = await generateFaqFromConversation(message, aiResponse);
+        if (faqCandidate) {
+          await storage.createFaqKnowledge({
+            question: faqCandidate.question,
+            answer: faqCandidate.answer,
+            source: 'conversation',
+          });
+        }
+      } catch (learnError) {
+        // Don't fail the request if learning fails
+        console.error("Failed to learn from conversation:", learnError);
+      }
 
       res.json({ response: aiResponse });
     } catch (error) {
@@ -399,6 +440,162 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting ticket:", error);
       res.status(500).json({ message: "Failed to delete ticket" });
+    }
+  });
+
+  // Admin ticket reply route
+  app.post('/api/admin/tickets/:id/replies', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      
+      if (isNaN(ticketId)) {
+        return res.status(400).json({ message: "Invalid ticket ID" });
+      }
+
+      const ticket = await storage.getTicketById(ticketId);
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      // Check if ticket is closed, rejected, or resolved
+      if (ticket.status === 'closed' || ticket.status === 'rejected' || ticket.status === 'resolved') {
+        return res.status(403).json({ message: `Cannot reply to ${ticket.status} tickets` });
+      }
+
+      const validatedData = insertTicketReplySchema.parse({
+        ticketId,
+        sender: "admin",
+        senderName: "Admin Support",
+        message: req.body.message,
+      });
+
+      const reply = await storage.createTicketReply(validatedData);
+      res.status(201).json(reply);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid reply data", errors: error.errors });
+      }
+      console.error("Error creating admin reply:", error);
+      res.status(500).json({ message: "Failed to create reply" });
+    }
+  });
+
+  // Admin user blocking routes
+  app.post('/api/admin/users/:userId/block', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const { userId } = req.params;
+      const user = await storage.blockUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      res.json({ message: "User blocked successfully", user });
+    } catch (error) {
+      console.error("Error blocking user:", error);
+      res.status(500).json({ message: "Failed to block user" });
+    }
+  });
+
+  app.post('/api/admin/users/:userId/unblock', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const { userId } = req.params;
+      const user = await storage.unblockUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      res.json({ message: "User unblocked successfully", user });
+    } catch (error) {
+      console.error("Error unblocking user:", error);
+      res.status(500).json({ message: "Failed to unblock user" });
+    }
+  });
+
+  // Admin FAQ management routes
+  app.get('/api/admin/faq', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const faqs = await storage.getFaqKnowledge();
+      res.json(faqs);
+    } catch (error) {
+      console.error("Error fetching FAQs:", error);
+      res.status(500).json({ message: "Failed to fetch FAQs" });
+    }
+  });
+
+  app.post('/api/admin/faq', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const { question, answer, source } = req.body;
+      
+      if (!question || !answer) {
+        return res.status(400).json({ message: "Question and answer are required" });
+      }
+
+      const faq = await storage.createFaqKnowledge({
+        question,
+        answer,
+        source: source || 'manual',
+      });
+
+      res.status(201).json(faq);
+    } catch (error) {
+      console.error("Error creating FAQ:", error);
+      res.status(500).json({ message: "Failed to create FAQ" });
+    }
+  });
+
+  app.delete('/api/admin/faq/:id', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const faqId = parseInt(req.params.id);
+      
+      if (isNaN(faqId)) {
+        return res.status(400).json({ message: "Invalid FAQ ID" });
+      }
+
+      await storage.deleteFaqKnowledge(faqId);
+      res.json({ message: "FAQ deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting FAQ:", error);
+      res.status(500).json({ message: "Failed to delete FAQ" });
+    }
+  });
+
+  // Admin PDF analysis route
+  app.post('/api/admin/analyze-pdf', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const { pdfUrl } = req.body;
+      
+      if (!pdfUrl || typeof pdfUrl !== 'string') {
+        return res.status(400).json({ message: "PDF URL is required" });
+      }
+
+      // Analyze PDF and extract FAQs
+      const faqs = await analyzePdfContent(pdfUrl);
+      
+      // Save extracted FAQs to database
+      const savedFaqs = [];
+      for (const faq of faqs) {
+        const saved = await storage.createFaqKnowledge({
+          question: faq.question,
+          answer: faq.answer,
+          source: 'pdf',
+        });
+        savedFaqs.push(saved);
+      }
+
+      // Update AI settings with PDF URL
+      await storage.updateAiSettingsWithPdf(true, pdfUrl);
+
+      res.json({ 
+        message: `Successfully analyzed PDF and extracted ${savedFaqs.length} FAQs`,
+        faqs: savedFaqs,
+      });
+    } catch (error) {
+      console.error("Error analyzing PDF:", error);
+      res.status(500).json({ 
+        message: error instanceof Error ? error.message : "Failed to analyze PDF" 
+      });
     }
   });
 

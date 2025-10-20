@@ -37,6 +37,7 @@ export const users = pgTable("users", {
   profileImageUrl: varchar("profile_image_url"),
   country: varchar("country"),
   isAdmin: boolean("is_admin").default(false).notNull(),
+  isBlocked: boolean("is_blocked").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -103,6 +104,7 @@ export type UserAiMemory = typeof userAiMemory.$inferSelect;
 export const aiSettings = pgTable("ai_settings", {
   id: serial("id").primaryKey(),
   geminiEnabled: boolean("gemini_enabled").notNull().default(true),
+  faqPdfUrl: text("faq_pdf_url"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -113,6 +115,25 @@ export const insertAiSettingsSchema = createInsertSchema(aiSettings).omit({
 
 export type InsertAiSettings = z.infer<typeof insertAiSettingsSchema>;
 export type AiSettings = typeof aiSettings.$inferSelect;
+
+// FAQ knowledge base table for AI learning
+export const faqKnowledge = pgTable("faq_knowledge", {
+  id: serial("id").primaryKey(),
+  question: text("question").notNull(),
+  answer: text("answer").notNull(),
+  source: varchar("source", { length: 50 }).notNull().default("pdf"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertFaqKnowledgeSchema = createInsertSchema(faqKnowledge).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertFaqKnowledge = z.infer<typeof insertFaqKnowledgeSchema>;
+export type FaqKnowledge = typeof faqKnowledge.$inferSelect;
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({

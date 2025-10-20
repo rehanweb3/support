@@ -4,6 +4,7 @@ import {
   ticketReplies,
   userAiMemory,
   aiSettings,
+  faqKnowledge,
   type User,
   type UpsertUser,
   type Ticket,
@@ -14,6 +15,8 @@ import {
   type InsertUserAiMemory,
   type AiSettings,
   type InsertAiSettings,
+  type FaqKnowledge,
+  type InsertFaqKnowledge,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and } from "drizzle-orm";
@@ -55,6 +58,17 @@ export interface IStorage {
   // AI settings operations
   getAiSettings(): Promise<AiSettings | undefined>;
   updateAiSettings(enabled: boolean): Promise<AiSettings>;
+  updateAiSettingsWithPdf(enabled: boolean, pdfUrl: string | null): Promise<AiSettings>;
+
+  // User blocking operations
+  blockUser(userId: string): Promise<User | undefined>;
+  unblockUser(userId: string): Promise<User | undefined>;
+  isUserBlocked(userId: string): Promise<boolean>;
+
+  // FAQ knowledge operations
+  getFaqKnowledge(): Promise<FaqKnowledge[]>;
+  createFaqKnowledge(faq: InsertFaqKnowledge): Promise<FaqKnowledge>;
+  deleteFaqKnowledge(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -236,6 +250,71 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return created;
     }
+  }
+
+  async updateAiSettingsWithPdf(enabled: boolean, pdfUrl: string | null): Promise<AiSettings> {
+    const existing = await this.getAiSettings();
+    
+    if (existing) {
+      const [updated] = await db
+        .update(aiSettings)
+        .set({ geminiEnabled: enabled, faqPdfUrl: pdfUrl, updatedAt: new Date() })
+        .where(eq(aiSettings.id, existing.id))
+        .returning();
+      return updated;
+    } else {
+      const [created] = await db
+        .insert(aiSettings)
+        .values({ geminiEnabled: enabled, faqPdfUrl: pdfUrl })
+        .returning();
+      return created;
+    }
+  }
+
+  // User blocking operations
+  async blockUser(userId: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ isBlocked: true, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return user;
+  }
+
+  async unblockUser(userId: string): Promise<User | undefined> {
+    const [user] = await db
+      .update(users)
+      .set({ isBlocked: false, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return user;
+  }
+
+  async isUserBlocked(userId: string): Promise<boolean> {
+    const user = await this.getUser(userId);
+    return user?.isBlocked || false;
+  }
+
+  // FAQ knowledge operations
+  async getFaqKnowledge(): Promise<FaqKnowledge[]> {
+    return await db
+      .select()
+      .from(faqKnowledge)
+      .orderBy(desc(faqKnowledge.createdAt));
+  }
+
+  async createFaqKnowledge(faqData: InsertFaqKnowledge): Promise<FaqKnowledge> {
+    const [faq] = await db
+      .insert(faqKnowledge)
+      .values(faqData)
+      .returning();
+    return faq;
+  }
+
+  async deleteFaqKnowledge(id: number): Promise<void> {
+    await db
+      .delete(faqKnowledge)
+      .where(eq(faqKnowledge.id, id));
   }
 }
 

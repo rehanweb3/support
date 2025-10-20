@@ -16,6 +16,7 @@ import TicketDetail from "@/pages/ticket-detail";
 import CreateTicket from "@/pages/create-ticket";
 import Chat from "@/pages/chat";
 import Settings from "@/pages/settings";
+import Admin from "@/pages/admin";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -36,6 +37,7 @@ function Router() {
           <Route path="/tickets/:id" component={TicketDetail} />
           <Route path="/chat" component={Chat} />
           <Route path="/settings" component={Settings} />
+          <Route path="/admin" component={Admin} />
         </>
       )}
       <Route component={NotFound} />

@@ -1,4 +1,4 @@
-import { Home, Ticket, MessageSquare, Settings, LogOut } from "lucide-react";
+import { Home, Ticket, MessageSquare, Settings, LogOut, Shield } from "lucide-react";
 import { useLocation } from "wouter";
 import {
   Sidebar,
@@ -93,6 +93,20 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+              {user?.isAdmin && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === "/admin"}
+                    data-testid="nav-admin-panel"
+                  >
+                    <a href="/admin">
+                      <Shield className="h-4 w-4" />
+                      <span>Admin Panel</span>
+                    </a>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -118,7 +132,7 @@ export function AppSidebar() {
         <Button
           variant="outline"
           className="w-full justify-start"
-          onClick={() => window.location.href = "/api/logout"}
+          onClick={() => window.location.href = "/api/local/logout"}
           data-testid="button-logout"
         >
           <LogOut className="h-4 w-4 mr-2" />

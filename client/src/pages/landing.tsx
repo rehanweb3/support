@@ -16,7 +16,7 @@ export default function Landing() {
               <span className="text-xl font-bold">Mintrax AI</span>
             </div>
             <Button
-              onClick={() => window.location.href = "/api/login"}
+              onClick={() => window.location.href = "/login"}
               data-testid="button-login"
             >
               Sign In
@@ -40,7 +40,7 @@ export default function Landing() {
             <div className="flex flex-wrap gap-4 justify-center">
               <Button
                 size="lg"
-                onClick={() => window.location.href = "/api/login"}
+                onClick={() => window.location.href = "/signup"}
                 className="gradient-bg"
                 data-testid="button-get-started"
               >
@@ -99,7 +99,7 @@ export default function Landing() {
           </p>
           <Button
             size="lg"
-            onClick={() => window.location.href = "/api/login"}
+            onClick={() => window.location.href = "/signup"}
             className="gradient-bg"
             data-testid="button-start-now"
           >

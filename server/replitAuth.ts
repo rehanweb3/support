@@ -12,7 +12,7 @@ if (!process.env.REPLIT_DOMAINS) {
   throw new Error("Environment variable REPLIT_DOMAINS not provided");
 }
 
-const getOidcConfig = memoize(
+export const getOidcConfig = memoize(
   async () => {
     return await client.discovery(
       new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
@@ -44,7 +44,7 @@ export function getSession() {
   });
 }
 
-function updateUserSession(
+export function updateUserSession(
   user: any,
   tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers
 ) {
@@ -98,8 +98,29 @@ export async function setupAuth(app: Express) {
     passport.use(strategy);
   }
 
-  passport.serializeUser((user: Express.User, cb) => cb(null, user));
-  passport.deserializeUser((user: Express.User, cb) => cb(null, user));
+  // Unified serialization for both Replit Auth and local auth
+  passport.serializeUser((user: any, cb) => {
+    // For local auth users, serialize the full user object with id
+    if (user.id && !user.claims) {
+      return cb(null, { type: 'local', id: user.id });
+    }
+    // For Replit auth users, serialize as before
+    return cb(null, { type: 'replit', user });
+  });
+  
+  passport.deserializeUser(async (data: any, cb) => {
+    try {
+      if (data.type === 'local') {
+        const user = await storage.getUser(data.id);
+        return cb(null, user);
+      } else {
+        // Replit auth user
+        return cb(null, data.user);
+      }
+    } catch (error) {
+      return cb(error);
+    }
+  });
 
   app.get("/api/login", (req, res, next) => {
     passport.authenticate(`replitauth:${req.hostname}`, {

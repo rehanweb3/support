@@ -1,14 +1,50 @@
 import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
+import { setupAuth, isAuthenticated, getOidcConfig, updateUserSession } from "./replitAuth";
+import { setupLocalAuth } from "./localAuth";
 import { generateAIResponse } from "./gemini";
 import { z } from "zod";
 import { insertTicketSchema, insertTicketReplySchema, insertUserAiMemorySchema } from "@shared/schema";
+import passport from "passport";
+import * as client from "openid-client";
+
+// Unified authentication middleware that supports both Replit Auth and local auth
+const isAuthenticatedLocal: RequestHandler = async (req: any, res, next) => {
+  // Check if user is authenticated via passport (local or Replit)
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const user = req.user as any;
+  
+  // For Replit Auth users, check token expiration and refresh if needed
+  if (user.claims && user.expires_at) {
+    const now = Math.floor(Date.now() / 1000);
+    if (now > user.expires_at) {
+      // Token is expired - try to refresh if possible
+      if (!user.refresh_token) {
+        // No refresh token available - session is invalid
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      
+      try {
+        const config = await getOidcConfig();
+        const tokenResponse = await client.refreshTokenGrant(config, user.refresh_token);
+        updateUserSession(user, tokenResponse);
+      } catch (error) {
+        // Refresh failed - session is invalid
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+    }
+  }
+  
+  return next();
+};
 
 const isAdmin: RequestHandler = async (req: any, res, next) => {
   try {
-    const userId = req.user?.claims?.sub;
+    const userId = req.user?.claims?.sub || req.user?.id;
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -26,13 +62,58 @@ const isAdmin: RequestHandler = async (req: any, res, next) => {
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth middleware
+  // Auth middleware - setup both Replit Auth and Local Auth
   await setupAuth(app);
+  setupLocalAuth();
 
-  // Auth routes
-  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
+  // Local Auth routes
+  app.post('/api/local/signup', (req, res, next) => {
+    passport.authenticate('local-signup', (err: any, user: any, info: any) => {
+      if (err) {
+        return res.status(500).json({ message: "Server error during signup" });
+      }
+      if (!user) {
+        return res.status(400).json({ message: info?.message || "Signup failed" });
+      }
+      req.login(user, (loginErr) => {
+        if (loginErr) {
+          return res.status(500).json({ message: "Error logging in after signup" });
+        }
+        res.status(201).json({ user: { id: user.id, username: user.username, email: user.email, isAdmin: user.isAdmin } });
+      });
+    })(req, res, next);
+  });
+
+  app.post('/api/local/login', (req, res, next) => {
+    passport.authenticate('local-login', (err: any, user: any, info: any) => {
+      if (err) {
+        return res.status(500).json({ message: "Server error during login" });
+      }
+      if (!user) {
+        return res.status(401).json({ message: info?.message || "Invalid credentials" });
+      }
+      req.login(user, (loginErr) => {
+        if (loginErr) {
+          return res.status(500).json({ message: "Error logging in" });
+        }
+        res.json({ user: { id: user.id, username: user.username, email: user.email, isAdmin: user.isAdmin } });
+      });
+    })(req, res, next);
+  });
+
+  app.post('/api/local/logout', (req, res) => {
+    req.logout((err) => {
+      if (err) {
+        return res.status(500).json({ message: "Error logging out" });
+      }
+      res.json({ message: "Logged out successfully" });
+    });
+  });
+
+  // Auth routes (works for both Replit Auth and Local Auth)
+  app.get('/api/auth/user', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const user = await storage.getUser(userId);
       res.json(user);
     } catch (error) {
@@ -42,9 +123,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Ticket routes
-  app.get('/api/tickets', isAuthenticated, async (req: any, res) => {
+  app.get('/api/tickets', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const tickets = await storage.getTickets(userId);
       res.json(tickets);
     } catch (error) {
@@ -53,9 +134,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/tickets/:id', isAuthenticated, async (req: any, res) => {
+  app.get('/api/tickets/:id', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const ticketId = parseInt(req.params.id);
       
       if (isNaN(ticketId)) {
@@ -75,9 +156,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/tickets', isAuthenticated, async (req: any, res) => {
+  app.post('/api/tickets', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const validatedData = insertTicketSchema.parse({
         ...req.body,
         userId,
@@ -96,9 +177,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Ticket reply routes
-  app.get('/api/tickets/:id/replies', isAuthenticated, async (req: any, res) => {
+  app.get('/api/tickets/:id/replies', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const ticketId = parseInt(req.params.id);
       
       if (isNaN(ticketId)) {
@@ -119,9 +200,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/tickets/:id/replies', isAuthenticated, async (req: any, res) => {
+  app.post('/api/tickets/:id/replies', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const ticketId = parseInt(req.params.id);
       
       if (isNaN(ticketId)) {
@@ -164,9 +245,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // AI chat routes
-  app.post('/api/ai/chat', isAuthenticated, async (req: any, res) => {
+  app.post('/api/ai/chat', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const { message } = req.body;
 
       if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -207,9 +288,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/ai/memory', isAuthenticated, async (req: any, res) => {
+  app.get('/api/ai/memory', isAuthenticatedLocal, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.user?.claims?.sub || req.user?.id;
       const memory = await storage.getUserAiMemory(userId);
       res.json(memory.reverse());
     } catch (error) {
@@ -219,7 +300,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // AI settings routes (admin only for updates)
-  app.get('/api/ai/settings', isAuthenticated, async (req: any, res) => {
+  app.get('/api/ai/settings', isAuthenticatedLocal, async (req: any, res) => {
     try {
       const settings = await storage.getAiSettings();
       res.json({ geminiEnabled: settings?.geminiEnabled ?? true });
@@ -229,7 +310,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/ai/settings', isAuthenticated, isAdmin, async (req: any, res) => {
+  app.post('/api/ai/settings', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const { enabled } = req.body;
       
@@ -246,7 +327,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Admin routes
-  app.get('/api/admin/tickets', isAuthenticated, isAdmin, async (req: any, res) => {
+  app.get('/api/admin/tickets', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const tickets = await storage.getAllTickets();
       res.json(tickets);
@@ -256,7 +337,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+  app.get('/api/admin/tickets/:id', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const ticketId = parseInt(req.params.id);
       
@@ -277,7 +358,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+  app.patch('/api/admin/tickets/:id', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const ticketId = parseInt(req.params.id);
       
@@ -305,7 +386,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+  app.delete('/api/admin/tickets/:id', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const ticketId = parseInt(req.params.id);
       

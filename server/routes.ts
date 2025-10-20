@@ -1,10 +1,29 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import { generateAIResponse } from "./gemini";
 import { z } from "zod";
 import { insertTicketSchema, insertTicketReplySchema, insertUserAiMemorySchema } from "@shared/schema";
+
+const isAdmin: RequestHandler = async (req: any, res, next) => {
+  try {
+    const userId = req.user?.claims?.sub;
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const user = await storage.getUser(userId);
+    if (!user?.isAdmin) {
+      return res.status(403).json({ message: "Admin access required" });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Error checking admin status:", error);
+    res.status(500).json({ message: "Failed to verify admin status" });
+  }
+};
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth middleware
@@ -199,7 +218,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // AI settings routes
+  // AI settings routes (admin only for updates)
   app.get('/api/ai/settings', isAuthenticated, async (req: any, res) => {
     try {
       const settings = await storage.getAiSettings();
@@ -210,7 +229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/ai/settings', isAuthenticated, async (req: any, res) => {
+  app.post('/api/ai/settings', isAuthenticated, isAdmin, async (req: any, res) => {
     try {
       const { enabled } = req.body;
       
@@ -223,6 +242,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating AI settings:", error);
       res.status(500).json({ message: "Failed to update AI settings" });
+    }
+  });
+
+  // Admin routes
+  app.get('/api/admin/tickets', isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const tickets = await storage.getAllTickets();
+      res.json(tickets);
+    } catch (error) {
+      console.error("Error fetching all tickets:", error);
+      res.status(500).json({ message: "Failed to fetch tickets" });
+    }
+  });
+
+  app.get('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      
+      if (isNaN(ticketId)) {
+        return res.status(400).json({ message: "Invalid ticket ID" });
+      }
+
+      const ticket = await storage.getTicketById(ticketId);
+      
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      res.json(ticket);
+    } catch (error) {
+      console.error("Error fetching ticket:", error);
+      res.status(500).json({ message: "Failed to fetch ticket" });
+    }
+  });
+
+  app.patch('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      
+      if (isNaN(ticketId)) {
+        return res.status(400).json({ message: "Invalid ticket ID" });
+      }
+
+      const { status, subject, description } = req.body;
+      const updates: any = {};
+      
+      if (status) updates.status = status;
+      if (subject) updates.subject = subject;
+      if (description) updates.description = description;
+
+      const ticket = await storage.updateTicketAsAdmin(ticketId, updates);
+      
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      res.json(ticket);
+    } catch (error) {
+      console.error("Error updating ticket:", error);
+      res.status(500).json({ message: "Failed to update ticket" });
+    }
+  });
+
+  app.delete('/api/admin/tickets/:id', isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      
+      if (isNaN(ticketId)) {
+        return res.status(400).json({ message: "Invalid ticket ID" });
+      }
+
+      await storage.deleteTicket(ticketId);
+      res.json({ message: "Ticket deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting ticket:", error);
+      res.status(500).json({ message: "Failed to delete ticket" });
     }
   });
 

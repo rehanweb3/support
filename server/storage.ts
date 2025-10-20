@@ -26,9 +26,13 @@ export interface IStorage {
 
   // Ticket operations
   getTickets(userId: string): Promise<Ticket[]>;
+  getAllTickets(): Promise<Ticket[]>;
   getTicket(id: number, userId: string): Promise<Ticket | undefined>;
+  getTicketById(id: number): Promise<Ticket | undefined>;
   createTicket(ticket: InsertTicket): Promise<Ticket>;
   updateTicket(id: number, userId: string, updates: Partial<Ticket>): Promise<Ticket | undefined>;
+  updateTicketAsAdmin(id: number, updates: Partial<Ticket>): Promise<Ticket | undefined>;
+  deleteTicket(id: number): Promise<void>;
 
   // Ticket reply operations
   getTicketReplies(ticketId: number): Promise<TicketReply[]>;
@@ -74,11 +78,26 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(tickets.createdAt));
   }
 
+  async getAllTickets(): Promise<Ticket[]> {
+    return await db
+      .select()
+      .from(tickets)
+      .orderBy(desc(tickets.createdAt));
+  }
+
   async getTicket(id: number, userId: string): Promise<Ticket | undefined> {
     const [ticket] = await db
       .select()
       .from(tickets)
       .where(and(eq(tickets.id, id), eq(tickets.userId, userId)));
+    return ticket;
+  }
+
+  async getTicketById(id: number): Promise<Ticket | undefined> {
+    const [ticket] = await db
+      .select()
+      .from(tickets)
+      .where(eq(tickets.id, id));
     return ticket;
   }
 
@@ -97,6 +116,21 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(tickets.id, id), eq(tickets.userId, userId)))
       .returning();
     return ticket;
+  }
+
+  async updateTicketAsAdmin(id: number, updates: Partial<Ticket>): Promise<Ticket | undefined> {
+    const [ticket] = await db
+      .update(tickets)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(tickets.id, id))
+      .returning();
+    return ticket;
+  }
+
+  async deleteTicket(id: number): Promise<void> {
+    await db
+      .delete(tickets)
+      .where(eq(tickets.id, id));
   }
 
   // Ticket reply operations

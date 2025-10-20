@@ -443,7 +443,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Admin ticket reply route
+  // Admin ticket reply routes
+  app.get('/api/admin/tickets/:id/replies', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      
+      if (isNaN(ticketId)) {
+        return res.status(400).json({ message: "Invalid ticket ID" });
+      }
+
+      // Admins can view any ticket's replies
+      const ticket = await storage.getTicketById(ticketId);
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      const replies = await storage.getTicketReplies(ticketId);
+      res.json(replies);
+    } catch (error) {
+      console.error("Error fetching ticket replies:", error);
+      res.status(500).json({ message: "Failed to fetch ticket replies" });
+    }
+  });
+
   app.post('/api/admin/tickets/:id/replies', isAuthenticatedLocal, isAdmin, async (req: any, res) => {
     try {
       const ticketId = parseInt(req.params.id);

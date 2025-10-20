@@ -39,7 +39,7 @@ export default function AdminTicketDetail() {
   const { data: replies, isLoading: repliesLoading } = useQuery<TicketReply[]>({
     queryKey: ["admin-ticket-replies", ticketId],
     queryFn: async () => {
-      const response = await fetch(`/api/tickets/${ticketId}/replies`);
+      const response = await fetch(`/api/admin/tickets/${ticketId}/replies`);
       if (!response.ok) throw new Error("Failed to fetch replies");
       return response.json();
     },
